@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
+pypdf
+langchain
+pinecone
+sentence-transformers
+groq
