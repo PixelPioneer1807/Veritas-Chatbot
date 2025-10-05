@@ -2,7 +2,7 @@
 
 import os
 import shutil
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from document_processor import process_pdf
@@ -35,7 +35,7 @@ async def upload_file(file: UploadFile = File(...)):
         return {"message": "Could not extract text from the document."}
     embed_chunks_and_upload_to_pinecone(chunks, file_id=file.filename)
     return {
-        "filename": file.filename, 
+        "filename": file.filename,
         "message": f"Successfully processed '{file.filename}'. Stored {len(chunks)} chunks."
     }
 
@@ -44,11 +44,21 @@ def chat(request: ChatRequest):
     # --- THIS IS THE NEW RAG LOGIC ---
     # 1. Retrieve context from Pinecone
     context = query_pinecone(request.message)
-    
+
     # 2. Generate a response from the LLM
     response_text = get_chat_response(request.message, context)
-    
+
     return {"role": "bot", "content": response_text}
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    while True:
+        data = await websocket.receive_text()
+        context = query_pinecone(data)
+        response_text = get_chat_response(data, context)
+        await websocket.send_json({"role": "bot", "content": response_text})
+
 
 @app.get("/")
 def read_root():

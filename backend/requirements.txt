@@ -7,3 +7,5 @@ langchain
 pinecone
 sentence-transformers
 groq
+websockets
+deepgram-sdk==3
