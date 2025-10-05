@@ -22,7 +22,7 @@ export default function Home() {
   const streamRef = useRef(null);
 
   // IMPORTANT: Replace with your actual Deepgram API key
-  const DEEPGRAM_API_KEY = "a37222af16ef76fb6faa95cdea358ddb7965d2c6"; 
+  const DEEPGRAM_API_KEY = ""; 
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
