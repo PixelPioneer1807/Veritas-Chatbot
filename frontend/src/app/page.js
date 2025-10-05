@@ -71,6 +71,13 @@ export default function Home() {
         if (!response.ok) throw new Error("Network response was not ok");
         const botResponse = await response.json();
         setMessages([...newMessages, botResponse]);
+        
+        // Auto-open PDF viewer with first citation
+        if (botResponse.citations && botResponse.citations.length > 0 && pdfUrl) {
+          const firstPage = botResponse.citations[0];
+          setCurrentPage(firstPage);
+          setShowPdfViewer(true);
+        }
       } catch (error) {
         console.error("Fetch error:", error);
         const errorMessage = { role: "bot", content: "Sorry, I'm having trouble connecting." };
@@ -85,22 +92,28 @@ export default function Home() {
   };
 
   const stopRecording = () => {
+    console.log("Stopping recording...");
+    
+    // Stop media recorder first
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop();
+      mediaRecorderRef.current = null;
     }
     
+    // Stop all audio tracks
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop());
       streamRef.current = null;
     }
     
-    if (deepgramSocketRef.current) {
-      deepgramSocketRef.current.close();
-      deepgramSocketRef.current = null;
+    // Close WebSocket without triggering onclose handler again
+    if (deepgramSocketRef.current && deepgramSocketRef.current.readyState === WebSocket.OPEN) {
+      deepgramSocketRef.current.close(1000, 'User stopped recording');
     }
+    deepgramSocketRef.current = null;
     
-    mediaRecorderRef.current = null;
     setIsRecording(false);
+    console.log("Recording stopped");
   };
 
   const toggleRecording = async () => {
@@ -161,11 +174,9 @@ export default function Home() {
 
         socket.onclose = (event) => {
           console.log('Deepgram WebSocket closed:', event.code, event.reason);
-          if (event.code !== 1000) {
-            // Abnormal closure
-            console.error('Abnormal WebSocket closure');
-          }
-          stopRecording();
+          // Don't call stopRecording here to avoid recursive calls
+          // Just clean up the state
+          setIsRecording(false);
         };
 
       } catch (error) {
@@ -288,28 +299,42 @@ export default function Home() {
       </div>
 
       {/* PDF Viewer Section */}
-      {showPdfViewer && pdfUrl && (
+      {showPdfViewer && pdfUrl && currentPage && (
         <div className="w-1/2 border-l bg-white flex flex-col">
           <div className="p-4 border-b bg-gray-50 flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <h2 className="text-lg font-semibold text-gray-800">Document Viewer</h2>
-              {currentPage && (
-                <span className="text-sm text-gray-600">Page {currentPage}</span>
-              )}
+              <h2 className="text-lg font-semibold text-gray-800">📄 Source Document</h2>
+              <span className="px-3 py-1 text-sm bg-blue-100 text-blue-700 rounded-full font-medium">
+                Page {currentPage}
+              </span>
             </div>
             <button
               onClick={() => setShowPdfViewer(false)}
-              className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors"
+              className="px-3 py-1 text-sm bg-gray-200 text-gray-700 rounded hover:bg-gray-300 transition-colors font-medium"
             >
-              Close
+              ✕ Close
             </button>
           </div>
-          <div className="flex-1 overflow-auto">
-            <iframe
-              src={`${pdfUrl}#page=${currentPage || 1}&view=FitH`}
-              className="w-full h-full"
-              title="PDF Viewer"
-            />
+          
+          {/* Info banner */}
+          <div className="px-4 py-2 bg-yellow-50 border-b border-yellow-200">
+            <p className="text-sm text-yellow-800">
+              <strong>💡 This page contains the information used to answer your question</strong>
+            </p>
+          </div>
+          
+          <div className="flex-1 overflow-hidden bg-gray-100 flex items-center justify-center p-4">
+            <div className="w-full h-full relative">
+              {/* Yellow border to highlight the relevant content */}
+              <div className="absolute inset-0 border-4 border-yellow-400 opacity-50 pointer-events-none z-10 animate-pulse"></div>
+              <iframe
+                key={currentPage}
+                src={`${pdfUrl}#page=${currentPage}&view=FitH&toolbar=0&navpanes=0&scrollbar=0`}
+                className="w-full h-full border-0 shadow-lg"
+                title={`PDF Page ${currentPage}`}
+                style={{ backgroundColor: 'white' }}
+              />
+            </div>
           </div>
         </div>
       )}
