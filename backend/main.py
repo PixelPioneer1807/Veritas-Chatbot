@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from document_processor import process_pdf
 from vector_store import embed_chunks_and_upload_to_pinecone, query_pinecone
-from llm_handler import get_chat_response
+from llm_handler import get_chat_response, is_casual_conversation
 from vlm_handler import query_image_with_vlm, is_visual_query, analyze_chart_comprehensively
 from web_search import search_web
 
@@ -70,22 +70,38 @@ def chat(request: ChatRequest):
     print(f"[DEBUG] Web Search Enabled: {request.search_web}")
     print(f"{'='*80}")
     
+    # Check for casual conversation first (no document needed)
+    is_casual, casual_response = is_casual_conversation(request.message)
+    if is_casual:
+        print("[DEBUG] Casual conversation detected - responding directly")
+        return {
+            "role": "bot",
+            "content": casual_response,
+            "citations": [],
+            "used_vlm": False,
+            "vlm_pages": [],
+            "rag_response": casual_response,
+            "web_response": None,
+            "response_type": "casual"
+        }
+    
     if not app.state.current_doc_filename:
-        return {"role": "bot", "content": "Please upload a document first."}
+        return {
+            "role": "bot",
+            "content": "Please upload a document first.",
+            "citations": [],
+            "used_vlm": False,
+            "vlm_pages": [],
+            "rag_response": None,
+            "web_response": None,
+            "response_type": "no_document"
+        }
 
-    # 1. Retrieve text context from Pinecone
+    # 1. Retrieve text context from Pinecone (RAG)
     print(f"[DEBUG] Querying Pinecone...")
     text_context, matches, pages_with_images = query_pinecone(request.message)
     
-    # 2. Perform Web Search (conditionally)
-    web_context = None
-    if request.search_web:
-        print("[DEBUG] Web search enabled. Performing web search...")
-        web_context = search_web(request.message)
-    else:
-        print("[DEBUG] Web search disabled for this query.")
-    
-    # 3. Handle Visual Content (VLM)
+    # 2. Handle Visual Content (VLM)
     vlm_context = ""
     vlm_pages_used = []
     query_is_visual = is_visual_query(request.message)
@@ -114,56 +130,83 @@ def chat(request: ChatRequest):
                     vlm_context += f"\n\n[Visual content from page {page_num}]: {vlm_answer}"
                     vlm_pages_used.append(page_num)
     
-    # ==============================================================================
-    # 4. Smart Context Blending
-    # ==============================================================================
-    MIN_DOC_CONTEXT_LENGTH = 500  # Threshold to decide if doc context is sufficient
-    TOTAL_CONTEXT_LENGTH = 8000   # Max total length for combined context
-
-    doc_ratio, web_ratio = 0.8, 0.2 # Default: 80% doc, 20% web
-
-    if len(text_context) < MIN_DOC_CONTEXT_LENGTH and web_context:
-        doc_ratio, web_ratio = 0.2, 0.8 # Flipped: 20% doc, 80% web
-        print(f"[DEBUG] Not enough document context (found {len(text_context)} chars). Prioritizing web search.")
-    else:
-        print(f"[DEBUG] Sufficient document context found. Prioritizing document.")
-
-    doc_limit = int(TOTAL_CONTEXT_LENGTH * doc_ratio)
-    web_limit = int(TOTAL_CONTEXT_LENGTH * web_ratio)
-
-    truncated_doc_context = text_context[:doc_limit]
-    truncated_web_context = web_context[:web_limit] if web_context else ""
-
-    # 5. Combine contexts for the final prompt
-    combined_context = f"Document Context:\n{truncated_doc_context}"
-
+    # 3. Build RAG context (Document + Visual)
+    rag_context = f"Document Context:\n{text_context}"
     if vlm_context:
-        combined_context += f"\n\nVisual Context:\n{vlm_context}"
-
-    if truncated_web_context:
-        combined_context += f"\n\nWeb Search Results:\n{truncated_web_context}"
-
-    print(f"[DEBUG] Combined context length: {len(combined_context)}")
-
-    # 6. Generate a final response from the LLM
-    print(f"[DEBUG] Sending to LLM...")
-    response_text = get_chat_response(request.message, combined_context)
+        rag_context += f"\n\nVisual Context:\n{vlm_context}"
     
-    # 7. Gather citations
+    print(f"[DEBUG] RAG context length: {len(rag_context)}")
+    
+    # 4. Generate RAG-only response
+    print(f"[DEBUG] Generating RAG response...")
+    rag_response = get_chat_response(request.message, rag_context)
+    
+    # 5. Perform Web Search and generate web-enhanced response (if enabled)
+    web_response = None
+    web_sources = []
+    if request.search_web:
+        print("[DEBUG] Web search enabled. Performing web search...")
+        web_search_results = search_web(request.message)
+        
+        if web_search_results:
+            # Extract web sources for citation
+            web_sources = extract_web_sources(web_search_results)
+            
+            # Generate web-enhanced response
+            combined_context = rag_context + f"\n\nWeb Search Results:\n{web_search_results}"
+            print(f"[DEBUG] Combined context length: {len(combined_context)}")
+            print(f"[DEBUG] Generating web-enhanced response...")
+            web_response = get_chat_response(request.message, combined_context)
+        else:
+            print("[DEBUG] No web search results found")
+    else:
+        print("[DEBUG] Web search disabled for this query.")
+    
+    # 6. Gather citations from document
     all_pages = set([match['metadata']['page_number'] for match in matches])
     all_pages.update(vlm_pages_used)
     page_numbers = sorted(list(all_pages))
 
-    print(f"[DEBUG] Final citations: {page_numbers}")
+    print(f"[DEBUG] Document citations: {page_numbers}")
+    print(f"[DEBUG] Web sources: {len(web_sources)}")
     print(f"{'='*80}\n")
 
     return {
-        "role": "bot", 
-        "content": response_text,
-        "citations": page_numbers,
+        "role": "bot",
+        "content": web_response if web_response else rag_response,  # Primary response
+        "rag_response": rag_response,  # RAG-only response
+        "web_response": web_response,  # Web-enhanced response
+        "web_sources": web_sources,  # List of web sources
+        "citations": page_numbers,  # Document page citations
         "used_vlm": len(vlm_pages_used) > 0,
-        "vlm_pages": vlm_pages_used
+        "vlm_pages": vlm_pages_used,
+        "response_type": "document_query"
     }
+
+def extract_web_sources(web_results: str) -> list:
+    """Extract source titles and links from web search results."""
+    sources = []
+    if not web_results:
+        return sources
+    
+    # Split by separator
+    results = web_results.split("\n\n---\n\n")
+    
+    for result in results:
+        lines = result.strip().split("\n")
+        title = None
+        link = None
+        
+        for line in lines:
+            if line.startswith("Title: "):
+                title = line.replace("Title: ", "").strip()
+            elif line.startswith("Link: "):
+                link = line.replace("Link: ", "").strip()
+        
+        if title and link and link != "N/A":
+            sources.append({"title": title, "link": link})
+    
+    return sources[:5]  # Return top 5 sources
 
 @app.get("/")
 def read_root():

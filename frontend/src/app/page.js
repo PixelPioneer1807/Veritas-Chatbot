@@ -1,8 +1,7 @@
 // frontend/src/app/page.js
-
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 
 export default function Home() {
   const [messages, setMessages] = useState([
@@ -16,13 +15,31 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [uploadedFileName, setUploadedFileName] = useState(null);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(true);
+  const [isMicrophoneOn, setIsMicrophoneOn] = useState(false);
 
   const deepgramSocketRef = useRef(null);
   const mediaRecorderRef = useRef(null);
   const streamRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const processorRef = useRef(null);
 
   // IMPORTANT: Replace with your actual Deepgram API key
   const DEEPGRAM_API_KEY = ""; 
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+      }
+      if (deepgramSocketRef.current) {
+        deepgramSocketRef.current.close();
+      }
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+      }
+    };
+  }, []);
 
   const handleFileChange = async (event) => {
     const file = event.target.files[0];
@@ -63,6 +80,7 @@ export default function Home() {
       const newMessages = [...messages, userMessage];
       setMessages(newMessages);
       setInput("");
+      
       try {
         const response = await fetch("http://127.0.0.1:8000/api/chat", {
           method: "POST", 
@@ -94,87 +112,125 @@ export default function Home() {
     setShowPdfViewer(true);
   };
 
-  const stopRecording = () => {
-    console.log("Stopping recording...");
-    
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
-      mediaRecorderRef.current.stop();
-      mediaRecorderRef.current = null;
-    }
-    
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop());
-      streamRef.current = null;
-    }
-    
-    if (deepgramSocketRef.current && deepgramSocketRef.current.readyState === WebSocket.OPEN) {
-      deepgramSocketRef.current.close(1000, 'User stopped recording');
-    }
-    deepgramSocketRef.current = null;
-    
-    setIsRecording(false);
-    console.log("Recording stopped");
-  };
-
-  const toggleRecording = async () => {
-    if (isRecording) {
-      stopRecording();
+  const toggleMicrophone = async () => {
+    if (isMicrophoneOn) {
+      console.log("Turning OFF microphone...");
+      
+      if (processorRef.current) {
+        processorRef.current.disconnect();
+        processorRef.current = null;
+      }
+      
+      if (audioContextRef.current) {
+        await audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
+      
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      
+      if (deepgramSocketRef.current && deepgramSocketRef.current.readyState === WebSocket.OPEN) {
+        deepgramSocketRef.current.send(JSON.stringify({ type: "CloseStream" }));
+        deepgramSocketRef.current.close(1000, 'User turned off microphone');
+      }
+      deepgramSocketRef.current = null;
+      
+      setIsMicrophoneOn(false);
+      console.log("Microphone turned OFF");
+      
     } else {
       if (!DEEPGRAM_API_KEY) {
         alert("Please add your Deepgram API key to enable voice recording!");
         return;
       }
+      
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        console.log("Turning ON microphone...");
+        
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            channelCount: 1,
+            sampleRate: 16000,
+          } 
+        });
         streamRef.current = stream;
         
-        const mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm' });
-        mediaRecorderRef.current = mediaRecorder;
-
-        const socket = new WebSocket('wss://api.deepgram.com/v1/listen?model=nova-2&smart_format=true', ['token', DEEPGRAM_API_KEY]);
+        const socket = new WebSocket(
+          'wss://api.deepgram.com/v1/listen?encoding=linear16&sample_rate=16000&channels=1&model=nova-2&smart_format=true&interim_results=true',
+          ['token', DEEPGRAM_API_KEY]
+        );
         deepgramSocketRef.current = socket;
 
         socket.onopen = () => {
-          setIsRecording(true);
-          mediaRecorder.ondataavailable = (event) => {
-            if (event.data.size > 0 && socket.readyState === WebSocket.OPEN) {
-              socket.send(event.data);
+          console.log("✓ Deepgram WebSocket connected");
+          setIsMicrophoneOn(true);
+          
+          const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          audioContextRef.current = audioContext;
+          
+          const source = audioContext.createMediaStreamSource(stream);
+          const processor = audioContext.createScriptProcessor(4096, 1, 1);
+          processorRef.current = processor;
+          
+          processor.onaudioprocess = (e) => {
+            if (socket.readyState === WebSocket.OPEN) {
+              const inputData = e.inputBuffer.getChannelData(0);
+              
+              const int16Data = new Int16Array(inputData.length);
+              for (let i = 0; i < inputData.length; i++) {
+                const s = Math.max(-1, Math.min(1, inputData[i]));
+                int16Data[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              }
+              
+              socket.send(int16Data.buffer);
             }
           };
-          mediaRecorder.start(250);
+          
+          source.connect(processor);
+          processor.connect(audioContext.destination);
         };
 
         socket.onmessage = (message) => {
           const data = JSON.parse(message.data);
-          const transcript = data.channel?.alternatives?.[0]?.transcript;
-          if (transcript) {
-            setInput(prev => prev + transcript + ' ');
+          
+          if (data.type === 'Results' && data.is_final) {
+            const transcript = data.channel?.alternatives?.[0]?.transcript;
+            if (transcript && transcript.trim()) {
+              console.log("Final transcript:", transcript);
+              setInput(prev => prev + transcript + ' ');
+            }
           }
         };
         
         socket.onerror = (error) => {
           console.error('Deepgram WebSocket error:', error);
-          stopRecording();
+          setIsMicrophoneOn(false);
         };
 
         socket.onclose = (event) => {
           console.log('Deepgram WebSocket closed:', event.code, event.reason);
-          setIsRecording(false);
+          setIsMicrophoneOn(false);
         };
 
       } catch (error) {
-        console.error("Failed to start recording:", error);
+        console.error("Failed to start microphone:", error);
+        alert("Could not access microphone. Please check permissions.");
       }
     }
   };
 
+  const toggleRecording = () => {
+    if (!isMicrophoneOn) {
+      alert("Please turn on the microphone first!");
+      return;
+    }
+    setIsRecording(!isRecording);
+  };
+
   const handleKeyDown = (e) => {
     if (e.key === 'Enter') {
-      // If recording, stop it first, then send the message
-      if (isRecording) {
-        stopRecording();
-      }
-      // Send the message
       handleSend();
     }
   };
@@ -200,9 +256,56 @@ export default function Home() {
                   <p className="whitespace-pre-wrap">{msg.content}</p>
                 </div>
                 
+                {/* NEW: Separated RAG and Web Responses */}
+                {msg.role === 'bot' && msg.response_type === 'document_query' && (
+                  <div className="w-full space-y-3">
+                    {/* RAG Response Section */}
+                    {msg.rag_response && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-semibold text-blue-700">📄 FROM DOCUMENT</span>
+                        </div>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.rag_response}</p>
+                      </div>
+                    )}
+                    
+                    {/* Web Response Section */}
+                    {msg.web_response && msg.web_response !== msg.rag_response && (
+                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className="text-xs font-semibold text-green-700">🌐 WITH WEB SEARCH</span>
+                        </div>
+                        <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.web_response}</p>
+                        
+                        {/* Web Sources */}
+                        {msg.web_sources && msg.web_sources.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-green-200">
+                            <span className="text-xs font-medium text-green-700 block mb-2">Web Sources:</span>
+                            <div className="space-y-1">
+                              {msg.web_sources.map((source, idx) => (
+                                <a 
+                                  key={idx} 
+                                  href={source.link} 
+                                  target="_blank" 
+                                  rel="noopener noreferrer"
+                                  className="block text-xs text-blue-600 hover:text-blue-800 hover:underline truncate"
+                                  title={source.title}
+                                >
+                                  {idx + 1}. {source.title}
+                                </a>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
+                {/* Document Citations */}
                 {msg.role === 'bot' && msg.citations && msg.citations.length > 0 && (
                   <div className="flex items-center gap-2 px-2 flex-wrap">
-                    <span className="text-xs text-gray-500 font-medium">Sources:</span>
+                    <span className="text-xs text-gray-500 font-medium">Document Pages:</span>
                     <div className="flex flex-wrap gap-1">
                       {msg.citations.map((page, idx) => (
                         <button key={idx} onClick={() => handlePageClick(page)} className="inline-flex items-center px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 rounded-full hover:bg-blue-200 transition-colors cursor-pointer" title={`Click to view Page ${page}`}>
@@ -212,7 +315,7 @@ export default function Home() {
                     </div>
                     {msg.used_vlm && (
                       <span className="inline-flex items-center px-2 py-1 text-xs font-medium bg-purple-100 text-purple-700 rounded-full" title={`Analyzed visual content on pages: ${msg.vlm_pages?.join(', ')}`}>
-                        Chart Analysis
+                        📊 Chart Analysis
                       </span>
                     )}
                   </div>
@@ -231,10 +334,26 @@ export default function Home() {
             <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium" onClick={() => fileInputRef.current.click()}>
               Upload
             </button>
-            <button className={`px-4 py-2 rounded-lg transition-colors font-medium ${isRecording ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-green-500 text-white hover:bg-green-600'}`} onClick={toggleRecording}>
-              {isRecording ? 'Stop' : 'Record'}
+            
+            <button 
+              className={`px-4 py-2 rounded-lg transition-colors font-medium flex items-center gap-2 ${
+                isMicrophoneOn 
+                  ? 'bg-green-500 text-white hover:bg-green-600' 
+                  : 'bg-gray-400 text-white hover:bg-gray-500'
+              }`} 
+              onClick={toggleMicrophone}
+            >
+              {isMicrophoneOn ? '🎤 OFF' : '🎤 ACTIVATE'}
             </button>
-            <input type="text" placeholder="Type your message..." className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={handleKeyDown} />
+            
+            <input 
+              type="text" 
+              placeholder={isMicrophoneOn ? "Speak or type your message..." : "Type your message..."} 
+              className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" 
+              value={input} 
+              onChange={(e) => setInput(e.target.value)} 
+              onKeyDown={handleKeyDown} 
+            />
             <button className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium" onClick={handleSend}>
               Send
             </button>
@@ -244,6 +363,11 @@ export default function Home() {
             <label htmlFor="web-search-toggle" className="text-sm text-gray-600 select-none cursor-pointer">
               Enable Web Search
             </label>
+            {isMicrophoneOn && (
+              <span className="text-xs text-green-600 font-medium ml-4">
+                🔴 Live transcription active
+              </span>
+            )}
           </div>
         </footer>
       </div>
