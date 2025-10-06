@@ -49,9 +49,10 @@ def embed_chunks_and_upload_to_pinecone(chunks_with_metadata: list, file_id: str
         print(f"An error occurred during embedding or upserting: {e}")
 
 
-def query_pinecone(query: str, top_k: int = 6):
+def query_pinecone(query: str, top_k: int = 4, score_threshold: float = 0.50):
     """
-    Embeds a query and retrieves the top_k most relevant text chunks from Pinecone.
+    Embeds a query and retrieves the top_k most relevant text chunks from Pinecone,
+    filtered by a relevance score threshold.
     Returns context, matches, and pages with images separately.
     """
     # Embed the query
@@ -64,8 +65,10 @@ def query_pinecone(query: str, top_k: int = 6):
         include_metadata=True
     )
     
-    # Extract the text from the metadata
-    matches = results['matches']
+    # Filter matches based on the score threshold
+    matches = [match for match in results['matches'] if match['score'] >= score_threshold]
+    
+    # Extract the text from the metadata of the filtered matches
     context = " ".join([match['metadata']['text'] for match in matches])
     
     # Identify pages with images from the retrieved chunks
