@@ -147,7 +147,3 @@ Follow these steps to set up and run the project locally.
 -   **User authentication:** Add a user authentication system to allow users to save and manage their documents.
 -   **Improved UI/UX:** Enhance the user interface with features like chat history and document management.
 -   **Deployment:** Provide instructions for deploying the application to a cloud platform.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
