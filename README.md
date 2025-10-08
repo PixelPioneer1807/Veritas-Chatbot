@@ -1,4 +1,4 @@
-# Veritas: A Multimodal Document Analysis Chatbot
+# Multimodal Document Analysis Chatbot
 
 Veritas is an intelligent chatbot designed to help you understand your documents in a more intuitive and powerful way. It goes beyond simple text-based Q&A by incorporating multimodal capabilities, allowing it to analyze both the text and the visual elements (like charts and graphs) within your PDFs. With integrated web search and voice input, Veritas provides a comprehensive and interactive document analysis experience.
 
