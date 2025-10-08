@@ -16,6 +16,8 @@ export default function Home() {
   const [uploadedFileName, setUploadedFileName] = useState(null);
   const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(true);
   const [isMicrophoneOn, setIsMicrophoneOn] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const messagesEndRef = useRef(null);
 
   const deepgramSocketRef = useRef(null);
   const mediaRecorderRef = useRef(null);
@@ -24,7 +26,12 @@ export default function Home() {
   const processorRef = useRef(null);
 
   // IMPORTANT: Replace with your actual Deepgram API key
-  const DEEPGRAM_API_KEY = ""; 
+  const DEEPGRAM_API_KEY = "a37222af16ef76fb6faa95cdea358ddb7965d2c6"; 
+
+  // Auto-scroll to bottom when messages change
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -77,9 +84,9 @@ export default function Home() {
   const handleSend = async () => {
     if (input.trim()) {
       const userMessage = { role: "user", content: input };
-      const newMessages = [...messages, userMessage];
-      setMessages(newMessages);
+      setMessages(prev => [...prev, userMessage]);
       setInput("");
+      setIsStreaming(true);
       
       try {
         const response = await fetch("http://127.0.0.1:8000/api/chat", {
@@ -90,19 +97,104 @@ export default function Home() {
             search_web: isWebSearchEnabled 
           }),
         });
-        if (!response.ok) throw new Error("Network response was not ok");
-        const botResponse = await response.json();
-        setMessages([...newMessages, botResponse]);
         
-        if (botResponse.citations && botResponse.citations.length > 0 && pdfUrl) {
-          const firstPage = botResponse.citations[0];
-          setCurrentPage(firstPage);
-          setShowPdfViewer(true);
+        if (!response.ok) throw new Error("Network response was not ok");
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        // Create initial bot message with streaming indicator
+        const botMessageIndex = messages.length + 1;
+        let botMessageData = { 
+          role: "bot", 
+          content: "",
+          isStreaming: true,
+          citations: [],
+          used_vlm: false,
+          vlm_pages: [],
+          response_type: null
+        };
+        
+        setMessages(prev => [...prev, botMessageData]);
+
+        let accumulatedContent = "";
+        let buffer = "";
+        let firstCitationSet = false;
+        
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) {
+            setIsStreaming(false);
+            setMessages(prev => prev.map((msg, idx) => 
+              idx === botMessageIndex ? { ...msg, isStreaming: false } : msg
+            ));
+            break;
+          }
+
+          const chunk = decoder.decode(value, { stream: true });
+          buffer += chunk;
+          
+          // Process complete SSE messages
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || ''; // Keep incomplete line in buffer
+          
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              
+              if (data === '[DONE]') {
+                continue;
+              }
+              
+              try {
+                const parsed = JSON.parse(data);
+                
+                if (parsed.type === 'metadata') {
+                  // Update message with metadata (citations, etc.)
+                  botMessageData = {
+                    ...botMessageData,
+                    citations: parsed.citations || [],
+                    used_vlm: parsed.used_vlm || false,
+                    vlm_pages: parsed.vlm_pages || [],
+                    response_type: parsed.response_type
+                  };
+                  
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    newMessages[botMessageIndex] = botMessageData;
+                    return newMessages;
+                  });
+                  
+                  // AUTO-OPEN PDF VIEWER if citations exist
+                  if (!firstCitationSet && parsed.citations && parsed.citations.length > 0) {
+                    firstCitationSet = true;
+                    setCurrentPage(parsed.citations[0]); // Show first cited page
+                    setShowPdfViewer(true);
+                  }
+                  
+                } else if (parsed.type === 'content') {
+                  // Append content
+                  accumulatedContent += parsed.content;
+                  botMessageData.content = accumulatedContent;
+                  
+                  setMessages(prev => {
+                    const newMessages = [...prev];
+                    newMessages[botMessageIndex] = { ...botMessageData };
+                    return newMessages;
+                  });
+                }
+              } catch (e) {
+                console.error('Parse error:', e);
+              }
+            }
+          }
         }
+        
       } catch (error) {
         console.error("Fetch error:", error);
+        setIsStreaming(false);
         const errorMessage = { role: "bot", content: "Sorry, I'm having trouble connecting." };
-        setMessages([...newMessages, errorMessage]);
+        setMessages(prev => [...prev, errorMessage]);
       }
     }
   };
@@ -221,16 +313,8 @@ export default function Home() {
     }
   };
 
-  const toggleRecording = () => {
-    if (!isMicrophoneOn) {
-      alert("Please turn on the microphone first!");
-      return;
-    }
-    setIsRecording(!isRecording);
-  };
-
   const handleKeyDown = (e) => {
-    if (e.key === 'Enter') {
+    if (e.key === 'Enter' && !isStreaming) {
       handleSend();
     }
   };
@@ -252,55 +336,14 @@ export default function Home() {
                 <div className="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center text-white font-bold flex-shrink-0">V</div>
               )}
               <div className={`flex flex-col gap-2 max-w-[70%] ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                <div className={`p-3 rounded-lg ${msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'}`}>
-                  <p className="whitespace-pre-wrap">{msg.content}</p>
+                <div className={`p-3 rounded-lg ${msg.role === 'user' ? 'bg-blue-500 text-white' : 'bg-gray-200 text-gray-800'} ${msg.isStreaming ? 'animate-pulse' : ''}`}>
+                  <p className="whitespace-pre-wrap">
+                    {msg.content}
+                    {msg.isStreaming && (
+                      <span className="inline-block w-2 h-4 ml-1 bg-blue-500 animate-pulse"></span>
+                    )}
+                  </p>
                 </div>
-                
-                {/* NEW: Separated RAG and Web Responses */}
-                {msg.role === 'bot' && msg.response_type === 'document_query' && (
-                  <div className="w-full space-y-3">
-                    {/* RAG Response Section */}
-                    {msg.rag_response && (
-                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-xs font-semibold text-blue-700">📄 FROM DOCUMENT</span>
-                        </div>
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.rag_response}</p>
-                      </div>
-                    )}
-                    
-                    {/* Web Response Section */}
-                    {msg.web_response && msg.web_response !== msg.rag_response && (
-                      <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-                        <div className="flex items-center gap-2 mb-2">
-                          <span className="text-xs font-semibold text-green-700">🌐 WITH WEB SEARCH</span>
-                        </div>
-                        <p className="text-sm text-gray-800 whitespace-pre-wrap">{msg.web_response}</p>
-                        
-                        {/* Web Sources */}
-                        {msg.web_sources && msg.web_sources.length > 0 && (
-                          <div className="mt-3 pt-3 border-t border-green-200">
-                            <span className="text-xs font-medium text-green-700 block mb-2">Web Sources:</span>
-                            <div className="space-y-1">
-                              {msg.web_sources.map((source, idx) => (
-                                <a 
-                                  key={idx} 
-                                  href={source.link} 
-                                  target="_blank" 
-                                  rel="noopener noreferrer"
-                                  className="block text-xs text-blue-600 hover:text-blue-800 hover:underline truncate"
-                                  title={source.title}
-                                >
-                                  {idx + 1}. {source.title}
-                                </a>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
                 
                 {/* Document Citations */}
                 {msg.role === 'bot' && msg.citations && msg.citations.length > 0 && (
@@ -326,46 +369,76 @@ export default function Home() {
               )}
             </div>
           ))}
+          <div ref={messagesEndRef} />
         </main>
 
         <footer className="p-4 border-t bg-white shadow-lg">
           <div className="flex items-center gap-3">
             <input type="file" ref={fileInputRef} onChange={handleFileChange} className="hidden" accept=".pdf" />
-            <button className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium" onClick={() => fileInputRef.current.click()}>
+            <button 
+              className="px-4 py-2 bg-gray-200 text-gray-700 rounded-lg hover:bg-gray-300 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed" 
+              onClick={() => fileInputRef.current.click()}
+              disabled={isStreaming}
+            >
               Upload
             </button>
             
             <button 
-              className={`px-4 py-2 rounded-lg transition-colors font-medium flex items-center gap-2 ${
+              className={`px-4 py-2 rounded-lg transition-colors font-medium flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed ${
                 isMicrophoneOn 
                   ? 'bg-green-500 text-white hover:bg-green-600' 
                   : 'bg-gray-400 text-white hover:bg-gray-500'
               }`} 
               onClick={toggleMicrophone}
+              disabled={isStreaming}
             >
               {isMicrophoneOn ? '🎤 OFF' : '🎤 ACTIVATE'}
             </button>
             
             <input 
               type="text" 
-              placeholder={isMicrophoneOn ? "Speak or type your message..." : "Type your message..."} 
-              className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black" 
+              placeholder={isStreaming ? "Generating response..." : (isMicrophoneOn ? "Speak or type your message..." : "Type your message...")} 
+              className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-black disabled:bg-gray-100 disabled:cursor-not-allowed" 
               value={input} 
               onChange={(e) => setInput(e.target.value)} 
-              onKeyDown={handleKeyDown} 
+              onKeyDown={handleKeyDown}
+              disabled={isStreaming}
             />
-            <button className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium" onClick={handleSend}>
-              Send
+            <button 
+              className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2" 
+              onClick={handleSend}
+              disabled={isStreaming || !input.trim()}
+            >
+              {isStreaming ? (
+                <>
+                  <span className="inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></span>
+                  Sending...
+                </>
+              ) : (
+                'Send'
+              )}
             </button>
           </div>
           <div className="flex items-center justify-center gap-2 mt-2">
-            <input type="checkbox" id="web-search-toggle" checked={isWebSearchEnabled} onChange={(e) => setIsWebSearchEnabled(e.target.checked)} className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer" />
+            <input 
+              type="checkbox" 
+              id="web-search-toggle" 
+              checked={isWebSearchEnabled} 
+              onChange={(e) => setIsWebSearchEnabled(e.target.checked)} 
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" 
+              disabled={isStreaming}
+            />
             <label htmlFor="web-search-toggle" className="text-sm text-gray-600 select-none cursor-pointer">
               Enable Web Search
             </label>
             {isMicrophoneOn && (
               <span className="text-xs text-green-600 font-medium ml-4">
                 🔴 Live transcription active
+              </span>
+            )}
+            {isStreaming && (
+              <span className="text-xs text-blue-600 font-medium ml-4">
+                ✨ Streaming response...
               </span>
             )}
           </div>

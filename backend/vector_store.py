@@ -49,7 +49,7 @@ def embed_chunks_and_upload_to_pinecone(chunks_with_metadata: list, file_id: str
         print(f"An error occurred during embedding or upserting: {e}")
 
 
-def query_pinecone(query: str, top_k: int = 4, score_threshold: float = 0.50):
+def query_pinecone(query: str, top_k: int = 3, score_threshold: float = 0.55):
     """
     Embeds a query and retrieves the top_k most relevant text chunks from Pinecone,
     filtered by a relevance score threshold.

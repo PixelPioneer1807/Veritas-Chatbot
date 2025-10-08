@@ -1,3 +1,5 @@
 .env
 venv/
-__pycache__/
+backend/__pycache__/llm_handler.cpython-312.pyc
+backend/__pycache__/main.cpython-312.pyc
+backend/__pycache__/vector_store.cpython-312.pyc

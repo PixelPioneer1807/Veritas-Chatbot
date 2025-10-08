@@ -58,20 +58,9 @@ def is_casual_conversation(query: str) -> tuple[bool, str]:
     
     return False, None
 
-def get_chat_response(query: str, context: str):
-    """
-    Generates a response from the LLM based on the user's query and retrieved context.
-    """
-    
-    # First, check if it's casual conversation
-    is_casual, casual_response = is_casual_conversation(query)
-    if is_casual:
-        return casual_response
-    
-    # Check if context is essentially empty or very short
-    context_has_content = context and len(context.strip()) > 50
-    
-    # Updated prompt to be more conversational and context-aware
+
+def _build_messages(query: str, context: str, chat_history: list):
+    """Helper function to build the messages list"""
     system_prompt = (
         "You are Veritas, a friendly and intelligent document analysis assistant. "
         "Your personality is helpful, clear, and conversational.\n\n"
@@ -98,16 +87,96 @@ def get_chat_response(query: str, context: str):
     
     user_prompt = f"Context:\n{context}\n\nQuestion:\n{query}"
 
+    messages = [
+        {"role": "system", "content": system_prompt},
+    ]
+    
+    # Include entire chat history (not just last 4 messages)
+    # Clean up chat history - convert any "bot" roles to "assistant"
+    cleaned_history = []
+    for msg in chat_history:  # Use all messages, not just [-4:]
+        cleaned_msg = msg.copy()
+        if cleaned_msg.get("role") == "bot":
+            cleaned_msg["role"] = "assistant"
+        cleaned_history.append(cleaned_msg)
+    
+    messages.extend(cleaned_history)
+    messages.append({"role": "user", "content": user_prompt})
+    
+    return messages
+
+
+async def get_chat_response_streaming(query: str, context: str, chat_history: list = []):
+    """
+    Generates a STREAMING response from the LLM.
+    This is an async generator that yields chunks of text.
+    """
+    import asyncio
+    
+    messages = _build_messages(query, context, chat_history)
+    
     try:
         chat_completion = client.chat.completions.create(
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
+            messages=messages,
             model="llama-3.3-70b-versatile",
-            temperature=0.3,  # Slightly higher for more natural conversation
+            temperature=0.3,
+            stream=True,
+        )
+        
+        # Stream content as it arrives with natural typing delay
+        buffer = ""
+        for chunk in chat_completion:
+            content = chunk.choices[0].delta.content or ""
+            if content:
+                buffer += content
+                
+                # Split buffer into words and yield them with delay
+                words = buffer.split(' ')
+                
+                # Keep the last incomplete word in buffer
+                if len(words) > 1:
+                    for word in words[:-1]:
+                        yield word + ' '
+                        await asyncio.sleep(0.03)  # 30ms delay per word for natural feel
+                    buffer = words[-1]
+        
+        # Yield any remaining content in buffer
+        if buffer:
+            yield buffer
+                
+    except Exception as e:
+        print(f"Error getting streaming response from Groq: {e}")
+        yield "Sorry, I'm having trouble connecting to the language model. 😔 Please try again in a moment."
+
+
+async def get_chat_response_non_streaming(query: str, context: str, chat_history: list = []):
+    """
+    Generates a NON-STREAMING response from the LLM.
+    Returns the complete response as a string.
+    """
+    messages = _build_messages(query, context, chat_history)
+    
+    try:
+        chat_completion = client.chat.completions.create(
+            messages=messages,
+            model="llama-3.3-70b-versatile",
+            temperature=0.3,
+            stream=False,
         )
         return chat_completion.choices[0].message.content
+        
     except Exception as e:
-        print(f"Error getting response from Groq: {e}")
+        print(f"Error getting non-streaming response from Groq: {e}")
         return "Sorry, I'm having trouble connecting to the language model. 😔 Please try again in a moment."
+
+
+def get_chat_response(query: str, context: str, chat_history: list = [], stream: bool = False):
+    """
+    Main function that returns the appropriate response handler based on the stream parameter.
+    """
+    if stream:
+        # Return the streaming async generator
+        return get_chat_response_streaming(query, context, chat_history)
+    else:
+        # Return the non-streaming coroutine
+        return get_chat_response_non_streaming(query, context, chat_history)
