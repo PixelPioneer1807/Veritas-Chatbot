@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 print("Loading embedding model...")
-model = SentenceTransformer('all-MiniLM-L6-v2')
+model = SentenceTransformer('sentence-transformers/paraphrase-MiniLM-L3-v2')
 print("Embedding model loaded.")
 
 pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
