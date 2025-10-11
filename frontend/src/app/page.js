@@ -26,7 +26,7 @@ export default function Home() {
   const processorRef = useRef(null);
 
   // IMPORTANT: Replace with your actual Deepgram API key
-  const DEEPGRAM_API_KEY = "a37222af16ef76fb6faa95cdea358ddb7965d2c6"; 
+  const DEEPGRAM_API_KEY = process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY;
 
   // Auto-scroll to bottom when messages change
   useEffect(() => {
@@ -63,7 +63,9 @@ export default function Home() {
     setMessages(prevMessages => [...prevMessages, uploadingMessage]);
 
     try {
-      const response = await fetch("process.env.NEXT_PUBLIC_API_URL/api/upload", {
+
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload`, {
+
         method: "POST",
         body: formData,
       });
@@ -89,7 +91,7 @@ export default function Home() {
       setIsStreaming(true);
       
       try {
-        const response = await fetch("process.env.NEXT_PUBLIC_API_URL/api/chat", {
+        const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/upload`, {
           method: "POST", 
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ 

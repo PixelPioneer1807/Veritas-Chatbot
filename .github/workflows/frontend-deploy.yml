@@ -1,0 +1,48 @@
+name: Deploy Frontend to AWS S3 and CloudFront
+
+on:
+  push:
+    branches:
+      - main # Or your default branch
+    paths:
+      - 'frontend/**'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-southeast-2 # Important: This must match your EC2 instance's region
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Build Next.js App
+        working-directory: ./frontend
+        run: |
+          npm install
+          npm run build
+        env:
+          NEXT_PUBLIC_DEEPGRAM_API_KEY: ${{ secrets.NEXT_PUBLIC_DEEPGRAM_API_KEY }}
+          NEXT_PUBLIC_API_URL: http://${{ secrets.EC2_HOST_DNS }}:8000
+
+      - name: Deploy to S3
+        run: |
+          aws s3 sync ./frontend/out s3://veritas-chatbot-frontend-bucket --delete
+        env:
+          AWS_S3_BUCKET_NAME: veritas-chatbot-frontend-bucket
+
+      - name: Invalidate CloudFront Cache
+        run: |
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} --paths "/*"
