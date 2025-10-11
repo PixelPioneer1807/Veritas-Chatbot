@@ -37,7 +37,6 @@ jobs:
           echo "SERPER_API_KEY=${{ secrets.SERPER_API_KEY }}" >> .env
           echo "DEEPGRAM_API_KEY=${{ secrets.NEXT_PUBLIC_DEEPGRAM_API_KEY }}" >> .env
 
-
       - name: Zip backend files
         working-directory: ./backend
         run: zip -r ../backend-deployment-package.zip . -x "venv/*" "__pycache__/*" "*.pyc"
@@ -55,6 +54,7 @@ jobs:
           host: ${{ secrets.EC2_HOST_DNS }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_PRIVATE_KEY }}
+          port: 2222
           source: "backend-deployment-package.zip"
           target: "/home/ubuntu"
 
@@ -64,12 +64,14 @@ jobs:
           host: ${{ secrets.EC2_HOST_DNS }}
           username: ${{ secrets.EC2_USERNAME }}
           key: ${{ secrets.EC2_PRIVATE_KEY }}
+          port: 2222
           script: |
             # Update and install required packages
             sudo apt-get update
-            sudo apt-get install -y python3-pip python3-venv unzip nginx
+            # The -y flag automatically answers "yes" to prompts
+            sudo apt-get install -y python3-pip python3-venv unzip nginx nodejs npm
             
-            # Unzip the deployment package
+            # Unzip the deployment package, overwriting existing files
             unzip -o backend-deployment-package.zip -d veritas-backend
             
             # Set up Python virtual environment and install dependencies
@@ -81,10 +83,11 @@ jobs:
             # Run database migrations
             alembic upgrade head
             
-            # Start the application using a process manager
-            # We'll use pm2, a popular choice for Node.js, but it works for Python too
+            # Install and use pm2 to manage the application process
             sudo npm install -g pm2
             pm2 stop uvicorn || true
-            pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name uvicorn --interpreter venv/bin/python
+            pm2 delete uvicorn || true
+            pm2 start "uvicorn main:app --host 0.0.0.0 --port 8000" --name uvicorn
             pm2 startup
+            sudo env PATH=$PATH:/usr/bin /usr/lib/node_modules/pm2/bin/pm2 startup systemd -u ubuntu --hp /home/ubuntu
             pm2 save
