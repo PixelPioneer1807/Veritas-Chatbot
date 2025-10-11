@@ -45,10 +45,10 @@ jobs:
         run: aws s3 cp backend-deployment-package.zip s3://${{ secrets.S3_BUCKET_NAME }}/
 
       - name: Run commands on EC2 instance via SSM
-        uses: aws-actions/aws-ssm-send-command@v1
+        uses: aws-actions/amazon-ssm-run-command@v1
         with:
           instance-ids: ${{ secrets.EC2_INSTANCE_ID }}
-          command: |
+          commands: |
             # Update and install required packages
             sudo apt-get update
             sudo apt-get install -y python3-pip python3-venv unzip nginx nodejs npm awscli
@@ -62,7 +62,6 @@ jobs:
             rm -rf veritas-backend
 
             # Unzip the new deployment package
-            # Note: The zip contains a 'backend' folder, so we unzip it into a folder named veritas-backend
             unzip -o backend-deployment-package.zip 
             mv backend veritas-backend
 
