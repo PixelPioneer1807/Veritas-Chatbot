@@ -39,9 +39,7 @@ jobs:
 
       - name: Deploy to S3
         run: |
-          aws s3 sync ./frontend/out s3://veritas-chatbot-frontend-bucket --delete
-        env:
-          AWS_S3_BUCKET_NAME: veritas-chatbot-frontend-bucket
+          aws s3 sync ./frontend/out s3://${{ secrets.S3_BUCKET_NAME }} --delete
 
       - name: Invalidate CloudFront Cache
         run: |
