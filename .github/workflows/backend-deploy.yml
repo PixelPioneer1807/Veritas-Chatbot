@@ -45,7 +45,7 @@ jobs:
         run: aws s3 cp backend-deployment-package.zip s3://${{ secrets.S3_BUCKET_NAME }}/
 
       - name: Run commands on EC2 instance via SSM
-        uses: aws-actions/amazon-ssm-run-command@v1
+        uses: aws-actions/amazon-ssm-run-command@v1.2.0 # Using a more specific version
         with:
           instance-ids: ${{ secrets.EC2_INSTANCE_ID }}
           commands: |
